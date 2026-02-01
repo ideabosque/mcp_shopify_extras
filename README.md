@@ -1,0 +1,1 @@
+# mcp_shopify_extras
