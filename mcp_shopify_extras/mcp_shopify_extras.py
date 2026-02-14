@@ -355,7 +355,10 @@ class MCPShopifyExtras:
                 variables,
             )
 
-            if len(customer.get("addresses", [])) > 0 and customer["addresses"][0]["address1"]:
+            if (
+                len(customer.get("addresses", [])) > 0
+                and customer["addresses"][0]["address1"]
+            ):
                 return humps.decamelize(customer)
 
             return contact_profile
