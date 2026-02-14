@@ -227,9 +227,7 @@ class MCPShopifyExtras:
             query = Graphql.generate_graphql_operation(
                 operation_name, operation_type, graphql_module.schema
             )
-
             payload = Serializer.json_dumps({"query": query, "variables": variables})
-
             headers = {
                 "x-api-key": graphql_module.x_api_key,
                 "Part-Id": self.part_id,
@@ -331,7 +329,7 @@ class MCPShopifyExtras:
                 "LastName": last_name,
                 "phone": phone,
             }
-            if address:
+            if address and address.get("address1"):
                 variables.update(
                     {
                         "address": {
@@ -357,7 +355,7 @@ class MCPShopifyExtras:
                 variables,
             )
 
-            if customer["addresses"][0]["address1"]:
+            if len(customer.get("addresses", [])) > 0 and customer["addresses"][0]["address1"]:
                 return humps.decamelize(customer)
 
             return contact_profile
