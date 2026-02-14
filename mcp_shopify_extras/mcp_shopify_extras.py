@@ -105,6 +105,7 @@ MCP_CONFIGURATION = {
                         "type": "object",
                         "description": "Customer address information",
                         "properties": {
+                            "place_uuid": {"type": "string"},
                             "address1": {"type": "string"},
                             "address2": {"type": "string"},
                             "city": {"type": "string"},
