@@ -38,6 +38,7 @@ setting = {
             "x_api_key": os.getenv("x_api_key"),
         },
     },
+    "shopify_endpoint_id": os.getenv("shopify_endpoint_id"),
 }
 
 sys.path.insert(0, f"{os.getenv('BASE_DIR')}/mcp_shopify_extras")
@@ -48,6 +49,7 @@ sys.path.insert(4, f"{os.getenv('BASE_DIR')}/silvaengine_dynamodb_base")
 sys.path.insert(5, f"{os.getenv('BASE_DIR')}/shopify_connector")
 sys.path.insert(6, f"{os.getenv('BASE_DIR')}/shopify_app_engine")
 sys.path.insert(7, f"{os.getenv('BASE_DIR')}/app_core_engine")
+sys.path.insert(8, f"{os.getenv('BASE_DIR')}/silvaengine_constants")
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger()
@@ -114,9 +116,9 @@ class MCPShopifyExtrasTest(unittest.TestCase):
             "contact": {
                 "firstName": "Mike",
                 "lastName": "Wang",
-                "email": "mikewang@0130.com",
+                "email": "user@example.com",
             },
-            "address": {"place_uuid": "51047521252098393207"},
+            "address": {"place_uuid": "40008312869235340185"},
         }
         result = self.mcp_shopify_extras.get_shopify_customer(**params)
         logger.info(result)
