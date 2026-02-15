@@ -200,10 +200,11 @@ class MCPShopifyExtras:
         """Get a GraphQL module by name."""
         if not self._graphql_modules.get(module_name):
             module_config = self.setting.get("graphql_modules", {}).get(module_name, {})
-            module_endpoint_id = module_config.get(
-                "endpoint_id",
-                self.setting.get("shopify_endpoint_id", self.endpoint_id),
-            )
+
+            module_endpoint_id = self.endpoint_id
+            if "shopify_endpoint_id" in self.setting:
+                module_endpoint_id = self.setting["shopify_endpoint_id"]
+
             self._graphql_modules[module_name] = GraphQLModule(
                 endpoint_id=module_endpoint_id,
                 module_name=module_name,
