@@ -13,6 +13,7 @@ import httpx
 import humps
 
 from mcp_marketing_collection import MCPMarketingCollection
+from silvaengine_dynamodb_base import GraphqlSchemaModel
 from silvaengine_utility.graphql import Graphql
 from silvaengine_utility.serializer import Serializer
 
@@ -198,18 +199,17 @@ class MCPShopifyExtras:
     def get_graphql_module(self, module_name: str) -> GraphQLModule | None:
         """Get a GraphQL module by name."""
         if not self._graphql_modules.get(module_name):
+            module_config = self.setting.get("graphql_modules", {}).get(module_name, {})
+            module_endpoint_id = module_config.get(
+                "endpoint_id",
+                self.setting.get("shopify_endpoint_id", self.endpoint_id),
+            )
             self._graphql_modules[module_name] = GraphQLModule(
-                endpoint_id=self.endpoint_id,
+                endpoint_id=module_endpoint_id,
                 module_name=module_name,
-                class_name=self.setting.get("graphql_modules", {})
-                .get(module_name, {})
-                .get("class_name"),
-                endpoint=self.setting.get("graphql_modules", {})
-                .get(module_name, {})
-                .get("endpoint"),
-                x_api_key=self.setting.get("graphql_modules", {})
-                .get(module_name, {})
-                .get("x_api_key"),
+                class_name=module_config.get("class_name"),
+                endpoint=module_config.get("endpoint"),
+                x_api_key=module_config.get("x_api_key"),
             )
 
         return self._graphql_modules.get(module_name)
@@ -224,9 +224,24 @@ class MCPShopifyExtras:
     ) -> Dict[str, Any]:
         try:
             graphql_module = self.get_graphql_module(module_name)
-            query = Graphql.generate_graphql_operation(
-                operation_name, operation_type, graphql_module.schema
-            )
+            query = None
+            try:
+                query = GraphqlSchemaModel.get_schema(
+                    endpoint_id=graphql_module.endpoint_id,
+                    operation_type=operation_type,
+                    operation_name=operation_name,
+                    module_name=module_name,
+                    enable_preferred_custom_schema=True,
+                )
+            except Exception as schema_err:
+                self.logger.warning(
+                    f"Failed to get stored schema for {operation_name}, falling back to auto-generation: {schema_err}"
+                )
+
+            if not query:
+                query = Graphql.generate_graphql_operation(
+                    operation_name, operation_type, graphql_module.schema
+                )
             payload = Serializer.json_dumps({"query": query, "variables": variables})
             headers = {
                 "x-api-key": graphql_module.x_api_key,
@@ -234,7 +249,7 @@ class MCPShopifyExtras:
                 "Content-Type": "application/json",
             }
 
-            with httpx.Client(http2=True) as client:
+            with httpx.Client(http2=True, timeout=httpx.Timeout(30.0)) as client:
                 response = client.post(
                     graphql_module.endpoint,
                     headers=headers,
@@ -325,8 +340,8 @@ class MCPShopifyExtras:
             variables = {
                 "shop": self.part_id,
                 "email": email,
-                "firstName": first_name,
-                "LastName": last_name,
+                "first_name": first_name,
+                "last_name": last_name,
                 "phone": phone,
             }
             if address and address.get("address1"):
@@ -356,7 +371,8 @@ class MCPShopifyExtras:
             )
 
             if (
-                len(customer.get("addresses", [])) > 0
+                customer
+                and len(customer.get("addresses", [])) > 0
                 and customer["addresses"][0]["address1"]
             ):
                 return humps.decamelize(customer)
