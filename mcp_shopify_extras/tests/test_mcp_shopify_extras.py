@@ -118,7 +118,7 @@ class MCPShopifyExtrasTest(unittest.TestCase):
                 "lastName": "Wang",
                 "email": "user@example.com",
             },
-            "address": {"place_uuid": "70986674185522284646"},
+            "address": {"place_uuid": "40008312869235340185"},
         }
         result = self.mcp_shopify_extras.get_shopify_customer(**params)
         logger.info(result)
