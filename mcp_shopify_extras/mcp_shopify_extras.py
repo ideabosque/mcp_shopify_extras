@@ -374,7 +374,7 @@ class MCPShopifyExtras:
             if (
                 customer
                 and len(customer.get("addresses", [])) > 0
-                and customer["addresses"][0]["address1"]
+                and customer["addresses"][0].get("address1")
             ):
                 return humps.decamelize(customer)
 
