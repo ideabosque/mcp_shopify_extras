@@ -29,13 +29,15 @@ setting = {
     "graphql_modules": {
         "ai_marketing_engine": {
             "class_name": "AIMarketingEngine",
-            "endpoint": f"{os.getenv('endpoint')}/ai_marketing_graphql",
-            "x_api_key": os.getenv("x_api_key"),
+            "endpoint": f"{os.getenv('ai_marketing_engine_gateway_base_url')}/{os.getenv('endpoint_id')}/ai_marketing_graphql",
+            "gateway_base_url": os.getenv("ai_marketing_engine_gateway_base_url"),
+            "token_username": os.getenv("ai_marketing_engine_token_username"),
+            "token_password": os.getenv("ai_marketing_engine_token_password"),
         },
         "shopify_app_engine": {
             "class_name": "ShopifyAppEngine",
             "endpoint": f"{os.getenv('endpoint')}/shopify_app_engine_graphql",
-            "x_api_key": os.getenv("x_api_key"),
+            "x_api_key": os.getenv("shopify_app_engine_x_api_key"),
         },
     },
     "shopify_endpoint_id": os.getenv("shopify_endpoint_id"),
