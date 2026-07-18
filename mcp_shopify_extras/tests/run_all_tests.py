@@ -1,17 +1,34 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
+"""Run all MCP Shopify Extras functions and export results as JSON.
+
+Mirrors the test_results_*.json layout used by mcp_marketing_collection.
+
+Usage:
+    python run_all_tests.py
+    python run_all_tests.py --out test_results_custom.json
+
+The output file is written next to this script under
+mcp_shopify_extras/tests/, named test_results_<timestamp>.json by default.
+"""
 from __future__ import print_function
 
 __author__ = "bibow"
 
+import argparse
+import datetime
+import json
 import logging
 import os
 import sys
-import unittest
+import time
+import traceback
+from typing import Any, Dict
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
 setting = {
     "region_name": os.getenv("region_name"),
     "aws_access_key_id": os.getenv("aws_access_key_id"),
@@ -57,23 +74,19 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger()
 
 from mcp_shopify_extras import MCPShopifyExtras
-from silvaengine_utility.serializer import Serializer
 
 
-class MCPShopifyExtrasTest(unittest.TestCase):
-    def setUp(self):
-        logger.info("Initiate MCPShopifyExtrasTest ...")
-        self.mcp_shopify_extras = MCPShopifyExtras(logger, **setting)
-        self.mcp_shopify_extras.endpoint_id = setting.get("endpoint_id")
-        self.mcp_shopify_extras.part_id = setting.get("part_id")
-
-    def tearDown(self):
-        logger.info("Destory MCPShopifyExtrasTest ...")
-
-    @unittest.skip("demonstrating skipping")
-    def test_place_shopify_draft_order(self):
-        logger.info("Start test_place_shopify_draft_order ...")
-        params = {
+def _default_args() -> Dict[str, Any]:
+    return {
+        "get_shopify_customer": {
+            "contact": {
+                "first_name": "Mike",
+                "last_name": "Wang",
+                "email": "user@example.com",
+            },
+            "address": {"place_uuid": "40008312869235340185"},
+        },
+        "place_shopify_draft_order": {
             "billing_address": {
                 "address1": "18627 Brookhurst St #414",
                 "city": "Fountain Valley",
@@ -107,24 +120,82 @@ class MCPShopifyExtrasTest(unittest.TestCase):
                 "province_code": "CA",
                 "zip": "92708",
             },
-        }
-        result = self.mcp_shopify_extras.place_shopify_draft_order(**params)
-        logger.info(result)
+        },
+    }
 
-    # @unittest.skip("demonstrating skipping")
-    def test_get_shopify_customer(self):
-        logger.info("Start test_get_shopify_customer ...")
-        params = {
-            "contact": {
-                "firstName": "Mike",
-                "lastName": "Wang",
-                "email": "user@example.com",
-            },
-            "address": {"place_uuid": "40008312869235340185"},
-        }
-        result = self.mcp_shopify_extras.get_shopify_customer(**params)
-        logger.info(result)
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run all MCP Shopify Extras functions.")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Output filename. Defaults to test_results_<timestamp>.json.",
+    )
+    parser.add_argument(
+        "--skip",
+        nargs="*",
+        default=[],
+        help="Function names to skip.",
+    )
+    args_ns = parser.parse_args()
+
+    timestamp = int(time.time())
+    out_name = args_ns.out or f"test_results_{timestamp}.json"
+    out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), out_name)
+
+    mcp = MCPShopifyExtras(logger, **setting)
+    mcp.endpoint_id = setting.get("endpoint_id")
+    mcp.part_id = setting.get("part_id")
+
+    test_args = _default_args()
+    results = []
+    summary = {}
+
+    for fn_name in ("get_shopify_customer", "place_shopify_draft_order"):
+        entry = {"function": fn_name, "arguments": test_args[fn_name]}
+        if fn_name in args_ns.skip:
+            entry["status"] = "SKIP"
+            entry["result"] = None
+            results.append(entry)
+            summary[fn_name] = "SKIP"
+            logger.info(f"[SKIP] {fn_name}")
+            continue
+
+        fn = getattr(mcp, fn_name)
+        logger.info(f"[RUN ] {fn_name}")
+        try:
+            result = fn(**test_args[fn_name])
+            entry["status"] = "PASS"
+            entry["result"] = result
+            summary[fn_name] = "PASS"
+            logger.info(f"[PASS] {fn_name}")
+        except Exception as e:
+            entry["status"] = "FAIL"
+            entry["error"] = str(e)
+            entry["traceback"] = traceback.format_exc()
+            entry["result"] = None
+            summary[fn_name] = "FAIL"
+            logger.error(f"[FAIL] {fn_name}: {e}")
+
+        results.append(entry)
+
+    payload = {
+        "generated_at": datetime.datetime.now().astimezone().isoformat(),
+        "endpoint_id": setting.get("endpoint_id"),
+        "part_id": setting.get("part_id"),
+        "results": results,
+        "summary": summary,
+    }
+
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, default=str, ensure_ascii=False)
+
+    print(f"\nResults exported to: {out_path}")
+    print(json.dumps(summary, indent=2))
+
+    failed = [s for s in summary.values() if s == "FAIL"]
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    unittest.main()
+    raise SystemExit(main())
