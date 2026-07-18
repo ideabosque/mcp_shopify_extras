@@ -13,7 +13,7 @@ import httpx
 import humps
 
 from mcp_marketing_collection import MCPMarketingCollection
-from silvaengine_dynamodb_base import GraphqlSchemaModel
+from silvaengine_dynamodb_base.models import GraphqlSchemaModel
 from silvaengine_utility.graphql import Graphql
 from silvaengine_utility.serializer import Serializer
 
@@ -197,20 +197,39 @@ class MCPShopifyExtras:
         return self._marketing_collection
 
     def get_graphql_module(self, module_name: str) -> GraphQLModule | None:
-        """Get a GraphQL module by name."""
-        if not self._graphql_modules.get(module_name):
-            module_config = self.setting.get("graphql_modules", {}).get(module_name, {})
+        """Get a GraphQL module by name.
 
+        Each module's auth is configured individually under
+        ``graphql_modules.<module_name>``. A module may use either:
+
+            - AWS API Gateway ``x_api_key`` auth, or
+            - silvaengine_gateway JWT Bearer auth (``gateway_base_url`` /
+              ``token_username`` / ``token_password`` / ``gateway_token``).
+
+        The Shopify module may override the endpoint resolution via
+        ``shopify_endpoint_id`` in the tool's setting.
+        """
+        if not self._graphql_modules.get(module_name):
+            module_setting = (
+                self.setting.get("graphql_modules", {}).get(module_name, {}) or {}
+            )
+
+            # Shopify modules resolve against the shopify-specific endpoint
+            # id when configured; otherwise fall back to the tool endpoint id.
             module_endpoint_id = self.endpoint_id
-            if "shopify_endpoint_id" in self.setting:
+            if module_name == "shopify_app_engine" and "shopify_endpoint_id" in self.setting:
                 module_endpoint_id = self.setting["shopify_endpoint_id"]
 
             self._graphql_modules[module_name] = GraphQLModule(
                 endpoint_id=module_endpoint_id,
                 module_name=module_name,
-                class_name=module_config.get("class_name"),
-                endpoint=module_config.get("endpoint"),
-                x_api_key=module_config.get("x_api_key"),
+                class_name=module_setting.get("class_name"),
+                endpoint=module_setting.get("endpoint"),
+                x_api_key=module_setting.get("x_api_key"),
+                gateway_base_url=module_setting.get("gateway_base_url"),
+                token_username=module_setting.get("token_username"),
+                token_password=module_setting.get("token_password"),
+                gateway_token=module_setting.get("gateway_token"),
             )
 
         return self._graphql_modules.get(module_name)
@@ -225,7 +244,6 @@ class MCPShopifyExtras:
     ) -> Dict[str, Any]:
         try:
             graphql_module = self.get_graphql_module(module_name)
-            query = None
             try:
                 query = GraphqlSchemaModel.get_schema(
                     endpoint_id=graphql_module.endpoint_id,
@@ -234,21 +252,63 @@ class MCPShopifyExtras:
                     module_name=module_name,
                     enable_preferred_custom_schema=True,
                 )
-            except Exception as schema_err:
-                self.logger.warning(
-                    f"Failed to get stored schema for {operation_name}, falling back to auto-generation: {schema_err}"
+            except Exception as schema_error:
+                # No stored schema for this endpoint/operation (e.g. the
+                # se-graphql-schemas table has no matching row). Fall back to
+                # generating the operation from the module's own schema.
+                self.logger.info(
+                    f"No stored GraphQL schema for {module_name}/{operation_name}, "
+                    f"generating from module schema. ({schema_error})"
                 )
+                query = None
 
             if not query:
+                if graphql_module.schema is None:
+                    raise Exception(
+                        f"No GraphQL schema available for module '{module_name}'. "
+                        f"Add a 'graphql_modules.{module_name}' entry (class_name, "
+                        f"endpoint, and either x_api_key or gateway_base_url/"
+                        f"token_username/token_password) to this tool's setting, "
+                        f"or store a schema in se-graphql-schemas for endpoint_id "
+                        f"'{graphql_module.endpoint_id}'."
+                    )
                 query = Graphql.generate_graphql_operation(
                     operation_name, operation_type, graphql_module.schema
                 )
+
+            if not graphql_module.endpoint:
+                raise Exception(
+                    f"No GraphQL endpoint configured for module '{module_name}'. "
+                    f"Add 'graphql_modules.{module_name}.endpoint' to this tool's "
+                    f"setting."
+                )
+
             payload = Serializer.json_dumps({"query": query, "variables": variables})
-            headers = {
-                "x-api-key": graphql_module.x_api_key,
-                "Part-Id": self.part_id,
-                "Content-Type": "application/json",
-            }
+
+            # Auth is configured per module. JWT Bearer auth (via
+            # silvaengine_gateway) takes precedence when configured; otherwise
+            # the AWS API Gateway ``x-api-key`` header is used.
+            token = graphql_module.get_gateway_token()
+            if token:
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Part-Id": self.part_id,
+                    "Content-Type": "application/json",
+                }
+            else:
+                headers = {
+                    "x-api-key": graphql_module.x_api_key,
+                    "Part-Id": self.part_id,
+                    "Content-Type": "application/json",
+                }
+
+            # httpx rejects None-valued headers with a TypeError. Drop any
+            # that came out None so the request goes through cleanly. The
+            # common case is Part-Id when the tool is invoked via
+            # /{endpoint_id}/mcp instead of /{endpoint_id}/{part_id}/mcp;
+            # x-api-key can also be None when neither Bearer nor API-key
+            # auth is configured for the module.
+            headers = {k: v for k, v in headers.items() if v is not None}
 
             with httpx.Client(http2=True, timeout=httpx.Timeout(30.0)) as client:
                 response = client.post(
@@ -272,9 +332,17 @@ class MCPShopifyExtras:
             )
 
     # * MCP Function.
-    def place_shopify_draft_order(self, **arguments: Dict[str, Any]) -> str:
-        """Place a Shopify draft order."""
+    def place_shopify_draft_order(self, **arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Place a Shopify draft order for a contact identified by email.
+
+        Accepts an array of line items (each with variant_id and quantity),
+        along with optional shipping_address and billing_address objects.
+        Returns the complete draft order object from Shopify, or None if
+        creation fails.
+        """
         try:
+            self.logger.info(f"Arguments: {arguments}")
+
             contact = arguments["contact"]
             email = contact["email"]
             shipping_address = arguments.get("shipping_address")
@@ -297,6 +365,7 @@ class MCPShopifyExtras:
                         "quantity": item.get("quantity", 1),
                     }
                 )
+
             variables = {
                 "shop": self.part_id,
                 "email": email,
@@ -311,7 +380,7 @@ class MCPShopifyExtras:
                 variables,
             )
 
-            if result.get("draftOrder"):
+            if result and result.get("draftOrder"):
                 return humps.decamelize(result["draftOrder"])
             return None
         except Exception as e:
@@ -320,9 +389,19 @@ class MCPShopifyExtras:
             raise e
 
     # * MCP Function.
-    def get_shopify_customer(self, **arguments: Dict[str, Any]) -> str:
-        """Get a Shopify customer."""
+    def get_shopify_customer(self, **arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Get or create a Shopify customer record for a contact.
+
+        First creates or updates the contact profile in the marketing system
+        (associating it with the place_uuid from the address), then fetches
+        the corresponding customer data from Shopify including addresses,
+        purchase history, and account information. Returns the customer
+        object from Shopify, or the contact profile if the customer is not
+        found.
+        """
         try:
+            self.logger.info(f"Arguments: {arguments}")
+
             contact = arguments["contact"]
             email = contact["email"]
             first_name = contact.get("first_name")
@@ -330,6 +409,8 @@ class MCPShopifyExtras:
             phone = contact.get("phone")
             address = arguments.get("address", {})
 
+            # Synchronize the contact profile in the marketing system so the
+            # Shopify customer lookup has an authoritative place association.
             contact_profile = self.marketing_collection.get_contact_profile(
                 **{
                     "contact": contact,
@@ -352,6 +433,7 @@ class MCPShopifyExtras:
                     "first_name", "last_name", "phone",
                 ]
                 variables["address"] = {k: address.get(k) for k in address_keys}
+
             customer = self._execute_graphql_query(
                 "shopify_app_engine_graphql",
                 "customer",
